@@ -1,0 +1,36 @@
+title: Stackarr Dashboard
+description: Self-hosted media automation
+theme: dark
+headerStyle: underlined
+statusStyle: dot
+useEqualHeights: true
+hideVersion: true
+hideFooter: true
+hideQuickLaunch: true
+showStats: true
+background:
+  image: https://images.pexels.com/photos/1485894/pexels-photo-1485894.jpeg?cs=srgb&dl=pexels-maoriginalphotography-1485894.jpg&fm=jpg&w=6000&h=4002
+  blur: sm
+  saturate: 50
+  brightness: 50
+layout:
+  Stackarr:
+    icon: mdi-movie-open
+    style: column
+    columns: 1
+    Media:
+      icon: mdi-play-circle-outline
+      style: row
+      columns: 3
+    Automation:
+      icon: mdi-robot-outline
+      style: row
+      columns: 3
+    Downloads:
+      icon: mdi-download-network-outline
+      style: row
+      columns: 2
+    Management:
+      icon: mdi-server
+      style: row
+      columns: 2

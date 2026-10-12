@@ -1,0 +1,173 @@
+name: stackarr
+
+services:
+  dockhand:
+    image: fnsys/dockhand:latest
+    container_name: dockhand
+    ports:
+      - "${DOCKHAND_PORT:-3000}:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dockhand_data:/app/data
+    restart: unless-stopped
+    networks:
+      - stackarr
+
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: homepage
+    ports:
+      - "${HOMEPAGE_PORT:-3001}:3000"
+    environment:
+      HOMEPAGE_ALLOWED_HOSTS: ${HOMEPAGE_ALLOWED_HOSTS}
+      HOMEPAGE_VAR_STACKARR_URL: ${STACKARR_URL}
+    volumes:
+      - ./homepage:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    networks:
+      - stackarr
+
+  plex:
+    image: linuxserver/plex:1.43.3
+    container_name: plex
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${PLEX_GPU_COUNT:-0}
+              capabilities: [gpu]
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      VERSION: docker
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    volumes:
+      - ${APPDATA}/plex:/config
+      - ${MEDIA_PATH}:/Plex
+    restart: unless-stopped
+
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "${QBITTORRENT_PORT:-8080}:8080"
+      - "${TORRENT_PORT:-6881}:6881"
+      - "${TORRENT_PORT:-6881}:6881/udp"
+    environment:
+      TZ: ${TZ}
+      VPN_SERVICE_PROVIDER: custom
+      VPN_TYPE: wireguard
+      FIREWALL_INPUT_PORTS: "8080,6881"
+      FIREWALL_OUTBOUND_SUBNETS: ${LAN_SUBNET}
+    volumes:
+      - ${APPDATA}/gluetun:/gluetun
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - stackarr
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: service:gluetun
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      WEBUI_PORT: 8080
+      TORRENTING_PORT: 6881
+    volumes:
+      - ${APPDATA}/qbittorrent:/config
+      - ${DOWNLOADS_PATH}:/downloads
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    ports:
+      - "${SONARR_PORT:-8989}:8989"
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+    volumes:
+      - ${APPDATA}/sonarr:/config
+      - ${DOWNLOADS_PATH}:/downloads
+      - ${MEDIA_PATH}:/media
+    restart: unless-stopped
+    networks:
+      - stackarr
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    ports:
+      - "${RADARR_PORT:-7878}:7878"
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+    volumes:
+      - ${APPDATA}/radarr:/config
+      - ${DOWNLOADS_PATH}:/downloads
+      - ${MEDIA_PATH}:/media
+    restart: unless-stopped
+    networks:
+      - stackarr
+
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: jackett
+    ports:
+      - "${JACKETT_PORT:-9117}:9117"
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      AUTO_UPDATE: "true"
+    volumes:
+      - ${APPDATA}/jackett:/config
+      - ${DOWNLOADS_PATH}:/downloads
+    restart: unless-stopped
+    networks:
+      - stackarr
+
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    init: true
+    user: "${PUID}:${PGID}"
+    ports:
+      - "${SEERR_PORT:-5055}:5055"
+    environment:
+      TZ: ${TZ}
+      PORT: 5055
+    volumes:
+      - ${APPDATA}/seerr:/app/config
+    restart: unless-stopped
+    networks:
+      - stackarr
+
+networks:
+  stackarr:
+    name: stackarr
+
+volumes:
+  dockhand_data:

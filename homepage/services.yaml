@@ -1,0 +1,58 @@
+- Stackarr:
+    - Media:
+        - Plex:
+            icon: plex.png
+            href: "{{HOMEPAGE_VAR_STACKARR_URL}}:32400/web"
+            description: Personal media streaming
+            server: my-docker
+            container: plex
+        - Seerr:
+            icon: seerr.png
+            href: "{{HOMEPAGE_VAR_STACKARR_URL}}:5055"
+            description: Media requests
+            server: my-docker
+            container: seerr
+    - Automation:
+        - Sonarr:
+            icon: sonarr.png
+            href: "{{HOMEPAGE_VAR_STACKARR_URL}}:8989"
+            description: TV library automation
+            server: my-docker
+            container: sonarr
+        - Radarr:
+            icon: radarr.png
+            href: "{{HOMEPAGE_VAR_STACKARR_URL}}:7878"
+            description: Movie library automation
+            server: my-docker
+            container: radarr
+        - Jackett:
+            icon: jackett.png
+            href: "{{HOMEPAGE_VAR_STACKARR_URL}}:9117"
+            description: Torrent indexer aggregation
+            server: my-docker
+            container: jackett
+    - Downloads:
+        - qBittorrent:
+            icon: qbittorrent.png
+            href: "{{HOMEPAGE_VAR_STACKARR_URL}}:8080"
+            description: VPN-routed downloads
+            server: my-docker
+            container: qbittorrent
+        - Gluetun:
+            icon: gluetun.png
+            description: VPN tunnel and kill switch
+            server: my-docker
+            container: gluetun
+    - Management:
+        - Dockhand:
+            icon: dockhand.png
+            href: "{{HOMEPAGE_VAR_STACKARR_URL}}:3000"
+            description: Docker management
+            server: my-docker
+            container: dockhand
+        - Homepage:
+            icon: homepage.png
+            href: "{{HOMEPAGE_VAR_STACKARR_URL}}:3001"
+            description: Stackarr landing dashboard
+            server: my-docker
+            container: homepage

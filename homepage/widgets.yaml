@@ -1,0 +1,16 @@
+- resources:
+    label: CPU
+    cpu: true
+
+- resources:
+    label: Memory
+    memory: true
+    expanded: true
+
+- resources:
+    label: Network
+    network: true
+
+- resources:
+    label: Uptime
+    uptime: true
