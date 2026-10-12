@@ -10,6 +10,7 @@ DOCKER_CMD=()
 DRY_RUN=0
 DOCKER_READY=0
 DRY_ENV_FILE=""
+STACK_RUNNING=0
 
 usage() {
   printf 'Usage: %s [--dry-run|-n]\n' "$(basename "$0")"
@@ -122,6 +123,16 @@ ensure_docker() {
   DOCKER_READY=1
 }
 
+# When the stack is already running, we avoid port conflict checks and
+# generally act in an update-friendly way.
+check_if_stack_running() {
+  if (( DOCKER_READY )); then
+    if "${DOCKER_CMD[@]}" compose -f "$PROJECT_DIR/docker-compose.yml" ps -q | grep -q . 2>/dev/null; then
+      STACK_RUNNING=1
+    fi
+  fi
+}
+
 default_network() {
   local route interface cidr ip prefix a b c d mask_a mask_b mask_c mask_d
   route=$(ip -4 route get 1.1.1.1 2>/dev/null || true)
@@ -152,6 +163,19 @@ env_value() {
 
 env_line() {
   printf '%s=%s\n' "$1" "$(env_value "$2")"
+}
+
+# Read a previous value from an existing .env (without evaluating arbitrary code).
+existing_env_value() {
+  local key=$1 val raw
+  [[ -f $ENV_FILE ]] || { printf '' ; return; }
+  raw=$(grep -m1 "^${key}=" "$ENV_FILE" || true)
+  [[ -n $raw ]] || { printf '' ; return; }
+  val=${raw#*=}
+  # strip surrounding single quotes if present
+  val=${val#\'}
+  val=${val%\'}
+  printf '%s' "$val"
 }
 
 write_environment() {
@@ -199,6 +223,10 @@ generate_pia_profile() {
 }
 
 check_ports_available() {
+  # If the stack is already running we'll skip this check because ports will
+  # be held by our own containers and are expected to be in use.
+  (( STACK_RUNNING )) && return
+
   local port used_ports=()
   command -v ss >/dev/null 2>&1 || return
 
@@ -223,14 +251,30 @@ note "This guided setup creates your folders, configures every service, and star
 command -v ip >/dev/null 2>&1 || die "The ip command is required to detect your local network."
 
 ensure_docker
+check_if_stack_running
+
+if (( STACK_RUNNING )); then
+  say "Detected existing Stackarr services running. Setup will act in update mode."
+else
+  say "No running Stackarr containers detected. Performing initial/setup flow."
+fi
 
 say "Choose where Stackarr stores your files"
 note "App settings stores service databases and preferences. Keep this folder private and do not delete it."
 note "Downloads stores incomplete and completed torrent files until Sonarr or Radarr imports them."
 note "Media library stores your permanent Movies and TV folders. Plex streams media from here."
-APPDATA=$(ask "App settings folder" "$HOME/.local/share/stackarr")
-DOWNLOADS_PATH=$(ask "Downloads folder" "$HOME/Downloads")
-MEDIA_PATH=$(ask "Media library folder" "$HOME/Media")
+
+# Defaults may come from an existing .env so users can re-run setup safely.
+APPDATA_DEFAULT=$(existing_env_value APPDATA)
+APPDATA_DEFAULT=${APPDATA_DEFAULT:-$HOME/.local/share/stackarr}
+DOWNLOADS_DEFAULT=$(existing_env_value DOWNLOADS_PATH)
+DOWNLOADS_DEFAULT=${DOWNLOADS_DEFAULT:-$HOME/Downloads}
+MEDIA_DEFAULT=$(existing_env_value MEDIA_PATH)
+MEDIA_DEFAULT=${MEDIA_DEFAULT:-$HOME/Media}
+
+APPDATA=$(ask "App settings folder" "$APPDATA_DEFAULT")
+DOWNLOADS_PATH=$(ask "Downloads folder" "$DOWNLOADS_DEFAULT")
+MEDIA_PATH=$(ask "Media library folder" "$MEDIA_DEFAULT")
 require_absolute_path "$APPDATA"
 require_absolute_path "$DOWNLOADS_PATH"
 require_absolute_path "$MEDIA_PATH"
@@ -250,14 +294,20 @@ if ask_optional_yes_no "Choose a specific PIA region?"; then
 fi
 
 say "Automatic local-network setup"
-PUID=$(id -u)
-PGID=$(id -g)
-TIMEZONE=$(timedatectl show --property=Timezone --value 2>/dev/null || true)
+# Allow reusing existing values from .env for idempotency
+PUID=$(existing_env_value PUID)
+PUID=${PUID:-$(id -u)}
+PGID=$(existing_env_value PGID)
+PGID=${PGID:-$(id -g)}
+TIMEZONE=$(existing_env_value TZ)
+TIMEZONE=${TIMEZONE:-$(timedatectl show --property=Timezone --value 2>/dev/null || true)}
 TIMEZONE=${TIMEZONE:-Etc/UTC}
-LAN_SUBNET=$(default_network)
+LAN_SUBNET=$(existing_env_value LAN_SUBNET)
+LAN_SUBNET=${LAN_SUBNET:-$(default_network)}
 HOST_IP=$(default_host_ip)
 HOST_IP=${HOST_IP:-127.0.0.1}
-STACKARR_URL=$(ask "Server address for dashboard links" "http://$HOST_IP")
+STACKARR_URL=$(existing_env_value STACKARR_URL)
+STACKARR_URL=${STACKARR_URL:-"http://$HOST_IP"}
 STACKARR_URL=${STACKARR_URL%/}
 HOMEPAGE_HOST=${STACKARR_URL#http://}
 HOMEPAGE_HOST=${HOMEPAGE_HOST#https://}
@@ -266,7 +316,8 @@ note "Detected local network: $LAN_SUBNET"
 note "Homepage: $STACKARR_URL:3001"
 
 say "Plex transcoding"
-PLEX_GPU_COUNT=0
+PLEX_GPU_COUNT=$(existing_env_value PLEX_GPU_COUNT)
+PLEX_GPU_COUNT=${PLEX_GPU_COUNT:-0}
 if ask_optional_yes_no "Use an NVIDIA GPU for Plex transcoding?"; then
   if ! command -v nvidia-smi >/dev/null 2>&1 || ! command -v nvidia-container-cli >/dev/null 2>&1; then
     if ((DRY_RUN)); then
@@ -297,17 +348,75 @@ if ((DRY_RUN)); then
   exit 0
 fi
 
+# Create folders idempotently
 create_folders
 check_ports_available
-say "Creating your PIA WireGuard connection"
-generate_pia_profile
-write_environment "$ENV_FILE"
+
+# Handle existing .env safely so git pulls / repo updates do not clobber user's setup.
+if [[ -f $ENV_FILE ]]; then
+  say ".env already exists"
+  note "Your existing .env will be preserved by default so that `git pull` won't overwrite your configuration."
+  note "Options: (K)eep existing, (O)verwrite (backup created), (U)pdate missing values from this setup run."
+  local_choice=""
+  while [[ -z $local_choice ]]; do
+    read -r -p "Choose [K/o/u] (default K): " local_choice
+    local_choice=${local_choice:-K}
+    case "$local_choice" in
+      [Kk])
+        note "Keeping existing .env. We'll still create folders and try to start/update the stack."
+        ;;
+      [Oo])
+        BACKUP="$ENV_FILE.$(date +%Y%m%d%H%M%S).bak"
+        mv "$ENV_FILE" "$BACKUP"
+        note "Backed up existing .env to $BACKUP"
+        write_environment "$ENV_FILE"
+        ;;
+      [Uu])
+        # Merge: read the existing values and re-write file with current computed defaults
+        note "Updating missing values in .env while preserving existing ones."
+        # Load existing values into variables if present
+        PUID=$(existing_env_value PUID)
+        PUID=${PUID:-$PUID}
+        PGID=$(existing_env_value PGID)
+        PGID=${PGID:-$PGID}
+        TIMEZONE=$(existing_env_value TZ)
+        TIMEZONE=${TIMEZONE:-$TIMEZONE}
+        APPDATA=$(existing_env_value APPDATA)
+        APPDATA=${APPDATA:-$APPDATA}
+        DOWNLOADS_PATH=$(existing_env_value DOWNLOADS_PATH)
+        DOWNLOADS_PATH=${DOWNLOADS_PATH:-$DOWNLOADS_PATH}
+        MEDIA_PATH=$(existing_env_value MEDIA_PATH)
+        MEDIA_PATH=${MEDIA_PATH:-$MEDIA_PATH}
+        LAN_SUBNET=$(existing_env_value LAN_SUBNET)
+        LAN_SUBNET=${LAN_SUBNET:-$LAN_SUBNET}
+        STACKARR_URL=$(existing_env_value STACKARR_URL)
+        STACKARR_URL=${STACKARR_URL:-$STACKARR_URL}
+        PLEX_GPU_COUNT=$(existing_env_value PLEX_GPU_COUNT)
+        PLEX_GPU_COUNT=${PLEX_GPU_COUNT:-$PLEX_GPU_COUNT}
+        write_environment "$ENV_FILE"
+        ;;
+      *)
+        note "Please choose K, o, or u."
+        local_choice=""
+        ;;
+    esac
+  done
+else
+  write_environment "$ENV_FILE"
+fi
 
 say "Checking your configuration"
 "${DOCKER_CMD[@]}" compose --env-file "$ENV_FILE" -f "$PROJECT_DIR/docker-compose.yml" config --quiet
 
-say "Starting Stackarr"
-"${DOCKER_CMD[@]}" compose --env-file "$ENV_FILE" -f "$PROJECT_DIR/docker-compose.yml" up -d
+say "Starting/Updating Stackarr"
+# If already running, pull new images and recreate changed containers.
+if (( STACK_RUNNING )); then
+  note "Updating images and containers for the running Stackarr."
+  "${DOCKER_CMD[@]}" compose --env-file "$ENV_FILE" -f "$PROJECT_DIR/docker-compose.yml" pull || true
+  "${DOCKER_CMD[@]}" compose --env-file "$ENV_FILE" -f "$PROJECT_DIR/docker-compose.yml" up -d
+else
+  "${DOCKER_CMD[@]}" compose --env-file "$ENV_FILE" -f "$PROJECT_DIR/docker-compose.yml" up -d
+fi
 
 say "Stackarr is running 🎉"
 note "Homepage:    $STACKARR_URL:3001"
